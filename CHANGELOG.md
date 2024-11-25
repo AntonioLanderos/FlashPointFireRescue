@@ -11,4 +11,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial commit (24/11/2024).
 - Add basic project structure (24/11/2024).
-- Add changelog
+- Add changelog (24/11/2024).
+- Add pull request template (24/11/2024).
