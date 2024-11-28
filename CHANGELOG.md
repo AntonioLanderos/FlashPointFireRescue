@@ -22,3 +22,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add first version of model (26/11/2024).
 - Add some Unity assets (26/11/2024).
 - Add Unity gameboard (27/11/2024).
+- Add graphics for analysis (28/11/2024).
