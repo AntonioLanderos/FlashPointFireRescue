@@ -1,379 +1,553 @@
-from mesa import Agent, Model
+# -*- coding: utf-8 -*-
+
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import logging
+import json
+
+import heapq
+
+from mesa import Agent, Model, batch_run
 from mesa.space import MultiGrid
-from mesa.time import RandomActivation
+from mesa.time import SimultaneousActivation
 from mesa.datacollection import DataCollector
-import numpy as np
+
+import random
+
+import itertools
+
 import matplotlib.pyplot as plt
-from matplotlib import animation
 from matplotlib.colors import ListedColormap
+import matplotlib.animation as animation
 
+import pandas as pd
 
-def calculate_distance(pos1, pos2):
-  """Calcula la distancia de Manhattan entre dos posiciones."""
-  x1, y1 = pos1
-  x2, y2 = pos2
-  return abs(x1 - x2) + abs(y1 - y2)
+import seaborn as sns
+
+random.seed(42)
 
 class FireRescueAgent(Agent):
-    def __init__(self, unique_id, model, agent_type, state=None):
-        super().__init__(unique_id, model)
-        self.agent_type = agent_type
-        self.state = state
-        self.action_points = 4
-        self.carrying_victim = False
+    def __init__(self, id, model, start_position):
+        super().__init__(id, model)
+        self.id = id
+        self.carrying_survivor = False
+        self.action_points = 0
+        self.skip_turn = False
+        self.history = []
+        self.starting_position = start_position
+
+    def calculate_distance(self, start_cell, target_cell):
+        # Calculate Manhattan distance
+        return abs(start_cell[0] - target_cell[0]) + abs(start_cell[1] - target_cell[1])
+
+    def find_path(self, grid_map, current_location, targets):
+        '''
+        A* pathfinding algorithm to find the shortest path to a target cell.
+        '''
+        priority_queue = [(0, current_location)]
+        visited_nodes = set()
+        path_trail = {}
+        accumulated_cost = {current_location: 0}
+
+        if targets:
+            while priority_queue:
+                _, active_cell = heapq.heappop(priority_queue)
+
+                if active_cell in targets:
+                    path = []
+                    while active_cell in path_trail:
+                        path.append(active_cell)
+                        active_cell = path_trail[active_cell]
+                    return path[::-1]
+
+                visited_nodes.add(active_cell)
+
+                for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                    neighbor = (active_cell[0] + dx, active_cell[1] + dy)
+
+                    if neighbor not in grid_map or neighbor in visited_nodes:
+                        continue
+
+                    move_cost = grid_map[neighbor]
+                    total_cost = accumulated_cost[active_cell] + move_cost
+
+                    if neighbor not in accumulated_cost or total_cost < accumulated_cost[neighbor]:
+                        accumulated_cost[neighbor] = total_cost
+                        valid_targets = [self.calculate_distance(neighbor, goal) for goal in targets if targets[goal]]
+
+                        if valid_targets:
+                            priority = total_cost + min(valid_targets)
+                        else:
+                            priority = total_cost + self.calculate_distance(neighbor, current_location)
+
+                        heapq.heappush(priority_queue, (priority, neighbor))
+                        path_trail[neighbor] = active_cell
+
+            return [current_location]  # No path found
+        return [current_location]
+
+    def move_agent(self):
+        neighbors = self.model.grid.get_neighborhood(self.pos, moore=False, include_center=False)
+
+        if self.carrying_survivor:
+            target_goal = {self.starting_position: False}
+        else:
+            target_goal = self.model.poi
+
+        path = self.find_path(self.model.grid_values, self.pos, target_goal)
+
+        next_cell = path[0] if path else random.choice(neighbors)
+
+        if model.check_collision(self.pos, next_cell):
+            next_cell = random.choice(neighbors)
+
+        if neighbors:
+            is_fire = self.model.grid_values[next_cell] == 2
+            is_safe = self.model.grid_values[next_cell] != 2
+
+            if self.pos in self.model.door_data and next_cell in self.model.door_data and self.action_points >= 1:
+                if not self.model.door_data[self.pos] and not self.model.door_data[next_cell]:
+                    self.toggle_door(self.pos, next_cell)
+
+            if not model.check_collision(self.pos, next_cell):
+                if is_fire and self.action_points >= 2:
+                    self.model.grid.move_agent(self, next_cell)
+                    self.history.append(f"Moved to: {next_cell}")
+                    self.action_points -= 2
+                elif is_safe and self.action_points >= 1:
+                    self.model.grid.move_agent(self, next_cell)
+                    self.history.append(f"Moved to: {next_cell}")
+                    self.action_points -= 1
+
+            self.reveal_poi()
+
+    def reveal_poi(self):
+        if self.pos in self.model.poi and self.model.poi[self.pos]:
+            self.carrying_survivor = True
+            del self.model.poi[self.pos]
+            self.history.append(f"Revealed POI at: {self.pos}")
+
+    def toggle_door(self, cell_1, cell_2):
+        if cell_1 in self.model.door_data and cell_2 in self.model.door_data:
+            self.model.door_data[cell_1] = True
+            self.model.door_data[cell_2] = True
+            self.history.append(f"Opened door between: {cell_1} and {cell_2}")
+            self.action_points -= 1
+
+    def extinguish_fire(self):
+        neighbors = self.model.grid.get_neighborhood(self.pos, moore=False, include_center=False)
+        fire_cells = [cell for cell in neighbors if self.model.grid_values[cell] == 2]
+        smoke_cells = [cell for cell in neighbors if self.model.grid_values[cell] == 1]
+
+        if fire_cells and self.action_points >= 2:
+            target_cell = random.choice(fire_cells)
+            self.model.grid_values[target_cell] = 0
+            self.history.append(f"Extinguished fire at: {target_cell}")
+            self.action_points -= 2
+        elif smoke_cells and self.action_points >= 1:
+            target_cell = random.choice(smoke_cells)
+            self.model.grid_values[target_cell] = 0
+            self.history.append(f"Extinguished smoke at: {target_cell}")
+            self.action_points -= 1
+
+    def take_action(self):
+        '''
+        The agent will take actions until it runs out of action points or it decides to end its turn.
+        '''
+        if self.pos == self.starting_position and self.carrying_survivor:
+            model.survivors_saved += 1
+            self.carrying_survivor = False
+
+        actions = [self.move_agent, self.extinguish_fire]
+        random.shuffle(actions)
+
+        while not self.skip_turn and self.action_points > 0:
+            chosen_action = random.choice(actions)
+            chosen_action()
+            if self.action_points <= 0:
+                self.end_turn()
+
+    def end_turn(self):
+        self.history.append("Turn ended")
+        self.skip_turn = True
 
     def step(self):
-        if self.agent_type == "firefighter":
-            self.firefighter_step()
-        elif self.agent_type == "fire":
-            self.fire_step()
-        elif self.agent_type == "poi":
-            pass  # Los POI no hacen nada en su paso
-
-    def firefighter_step(self):
-        if self.action_points <= 0:
-            return
-
-        # 1. Extinguir fuego adyacente
-        if self.try_extinguish_fire():
-            return
-
-        # 2. Rescatar víctima adyacente
-        if self.try_rescue_victim():
-            return
-
-        # 3. Moverse hacia la salida si está cargando víctima
-        if self.carrying_victim:
-            if self.move_towards_exit():
-                return
-
-        # 5. Moverse hacia la víctima más cercana
-        if self.move_towards_victim():
-            return
-
-        # Si no hay acciones disponibles, terminar turno
-        self.action_points = 0
-
-    def try_extinguish_fire(self):
-        neighbors = self.model.grid.get_neighborhood(self.pos, moore=False, include_center=False)
-        for neighbor in neighbors:
-            for agent in self.model.grid.get_cell_list_contents(neighbor):
-                if agent.agent_type == "fire" and agent.state == "fire":
-                    agent.state = "smoke"
-                    self.action_points -= 1
-                    print(f"Firefighter {self.unique_id} extinguished fire at {neighbor}")
-                    return True
-        return False
-
-    def try_rescue_victim(self):
-        for agent in self.model.grid.get_cell_list_contents(self.pos):
-            if agent.agent_type == "poi" and agent.state == "v":
-                self.carrying_victim = True
-                self.model.grid.remove_agent(agent)
-                self.model.saved_victims += 1
-                self.action_points -= 1
-                print(f"Firefighter {self.unique_id} rescued victim at {self.pos}")
-                return True
-        return False
-
-    def move_towards_exit(self):
-        exit_pos = self.find_closest_exit()
-        if exit_pos:
-            print(f"Firefighter {self.unique_id} targeting exit at {exit_pos}")
-        if exit_pos and self.can_move_to(self.pos, exit_pos):
-            print(f"Firefighter {self.unique_id} moving to exit at {exit_pos}")
-            self.model.grid.move_agent(self, exit_pos)
-            self.action_points -= 1
-            if exit_pos in self.model.entry_points:
-                self.carrying_victim = False
-                print(f"Firefighter {self.unique_id} saved victim at exit {exit_pos}")
-            return True
-        print(f"Firefighter {self.unique_id} cannot move to exit {exit_pos}")
-        return False
+        self.skip_turn = False
+        self.history = []
+        self.action_points += 4
+        self.action_points = min(self.action_points, 8)
+        self.take_action()
 
 
-    def move_towards_victim(self):
-        victim = self.find_closest_victim()
-        if victim and self.can_move_to(self.pos, victim.pos):
-            print(f"Firefighter {self.unique_id} targeting victim at {victim.pos}")
-            self.model.grid.move_agent(self, victim.pos)
-            self.action_points -= 1
-            print(f"Firefighter {self.unique_id} moved towards victim at {victim.pos}")
-            return True
-        print(f"Firefighter {self.unique_id} cannot move towards victim at {victim.pos}")
-        return False
+def get_grid(model):
+    grid = []
+    for row_index in range(model.grid.height):
+        row_data = []
+        for col_index in range(model.grid.width):
+            cell = (col_index, row_index)
+            if not model.grid.is_cell_empty(cell):
+                row_data.append(3)  # Agent
+            elif cell in model.poi:
+                row_data.append(4)  # POI
+            elif model.grid_values[cell] == 1:
+                row_data.append(1)  
+            elif model.grid_values[cell] == 2:
+                row_data.append(2)  
+            else:
+                row_data.append(0)  # Empty
+        grid.append(row_data)
+    return grid
 
-    def find_closest_exit(self):
-      exits = self.model.entry_points
-      # Aquí `x` ya es una posición, por lo que no necesita cambios
-      return min(exits, key=lambda x: self.calculate_distance(self.pos, x))
+def get_walls(model):
+    walls = []
+    for row_index in range(model.grid.height):
+        wall_row = []
+        for col_index in range(model.grid.width):
+            wall_row.append(model.wall_states[(col_index, row_index)][0])
+        walls.append(wall_row)
+    return walls
 
-
-    def find_closest_victim(self):
-        victims = [
-            agent for agent in self.model.schedule.agents
-            if agent.agent_type == "poi" and agent.state == "v"
-        ]
-        if not victims:
-            return None
-        # Pasar las posiciones de los agentes en lugar de los objetos
-        return min(victims, key=lambda agent: self.calculate_distance(self.pos, agent.pos))
-
-    
-    def calculate_distance(self, pos1, pos2):
-      """Calcula la distancia de Manhattan entre dos posiciones."""
-      x1, y1 = pos1
-      x2, y2 = pos2
-      return abs(x1 - x2) + abs(y1 - y2)
-
-
-    def fire_step(self):
-        if self.state == "fire":
-            neighbors = self.model.grid.get_neighborhood(self.pos, moore=False, include_center=False)
-            for neighbor in neighbors:
-                if self.random.random() < 0.3:  # Probabilidad de expansión
-                    if self.model.grid.is_cell_empty(neighbor):  # Verificar que no haya pared u otro obstáculo
-                        new_fire = FireRescueAgent(f"fire_{neighbor[0]}_{neighbor[1]}", self.model, "fire", state="fire")
-                        self.model.grid.place_agent(new_fire, neighbor)
-                        self.model.schedule.add(new_fire)
-                        print(f"Fire spread to {neighbor}")
-
-
-    def can_move_to(self, current_pos, target_pos):
-        """Determina si un agente puede moverse de current_pos a target_pos."""
-        x, y = current_pos
-        tx, ty = target_pos
-
-        # Verificar límites del grid
-        if not (0 <= tx < self.model.grid.width and 0 <= ty < self.model.grid.height):
-            print(f"Invalid movement direction from {current_pos} to {target_pos}")
-            return False
-
-        # Obtener el agente pared en la celda actual
-        wall_agents = [
-            agent for agent in self.model.grid.get_cell_list_contents(current_pos)
-            if agent.agent_type == "wall"
-        ]
-
-        # Si hay paredes en la celda actual, verificar su configuración
-        for wall in wall_agents:
-            direction = (tx - x, ty - y)  # Dirección del movimiento
-            wall_config = wall.state.get("walls", "0000")
-            if not self.is_direction_open(wall_config, direction):
-                print(f"Blocked by wall at {current_pos} in direction {direction}")
-                return False
-
-        # Si no hay agentes bloqueando, el movimiento es válido
-        return True
-
-    def is_direction_open(self, wall_config, direction):
-        """Verifica si la dirección está abierta según la configuración de la pared."""
-        direction_map = {
-            (0, -1): 0,  # Izquierda
-            (0, 1): 1,   # Derecha
-            (-1, 0): 2,  # Arriba
-            (1, 0): 3    # Abajo
-        }
-        dir_index = direction_map.get(direction)
-        if dir_index is None:
-            return False  # Movimiento inválido
-        return wall_config[dir_index] == "0"
 
 class FireRescueModel(Model):
-    def __init__(self, width, height, config):
+    def __init__(self, num_firefighters, poi, wall_data, door_states, initial_fire, spawn_points):
         super().__init__()
-        self.width = width
-        self.height = height
-        self.grid = MultiGrid(width, height, torus=False)
-        self.schedule = RandomActivation(self)
-        self.saved_victims = 0
-        self.lost_victims = 0
-        self.total_damage_counter = 0
-        self.victory_victims = 7
-        self.failure_victims = 4
-        self.running = True
-        self.entry_points = []
+        self.current_step = 0
+        self.schedule = SimultaneousActivation(self)
+        self.survivors_saved = 0
+        self.survivor_losses = 0
+        self.simulation_status = "In progress"
+        self.fire_locations = [(int(y) - 1, int(x) - 1) for x, y in (coord.split() for coord in initial_fire)]
+        self.wall_configuration = [row.split() for row in wall_data]
+        self.datacollector = DataCollector(
+            model_reporters={
+                "Grid": get_grid,
+                "Walls": get_walls,
+                "StepCount": "current_step",
+                "DoorStatus": "door_data",
+                "POIs": "interest_points",
+                "RescuedCount": "survivors_saved",
+                "SimulationStatus": "simulation_status",
+                "LossCount": "survivor_losses",
+                "DamageScore": "damage_tracker",
+                "Efficiency": lambda model: model.survivors_saved / model.current_step if model.current_step > 0 else 0,
+            },
+            agent_reporters={
+                "AgentID": lambda agent: agent.id,
+                "CurrentPosition": lambda agent: (agent.pos[0], agent.pos[1]),
+                "Actions": lambda agent: agent.history,
+            },
+        )
+        self.poi = {
+            (int(y) - 1, int(x) - 1): state for (x, y), state in poi.items()
+        }
+        self.width = 8
+        self.height = 6
+        self.door_data = door_states
+        self.spawn_points = [(int(y) - 1, int(x) - 1) for x, y in (coord.split() for coord in spawn_points)]
+        self.grid = MultiGrid(self.width, self.height, torus=False)
+        self.grid_values = {(x, y): 0 for y in range(self.height) for x in range(self.width)}
+        self.wall_states = {(x, y): ["0000", "0000"] for y in range(self.height) for x in range(self.width)}
+        self.damage_tracker = 0
+        self.victory_counter = 0
 
-        # Configuración inicial
-        self.place_walls(config[0])
-        self.place_pois(config[1])
-        self.place_fire(config[2])
-        self.place_doors(config[3])
-        self.place_entry_points(config[4])
-        self.place_firefighters()
+        # Initialize walls
+        for y, row in enumerate(self.wall_configuration):
+            for x, value in enumerate(row):
+                self.wall_states[(x, y)] = [value, "0000"]
 
-        self.datacollector = DataCollector({
-            'Grid': self.get_grid,
-            "Saved Victims": lambda m: m.saved_victims,
-            "Lost Victims": lambda m: m.lost_victims,
-            "Total Damage": lambda m: m.total_damage_counter
-        })
+        # Initialize fire 
+        for pos in self.fire_locations:
+            self.grid_values[pos] = 2
 
-    def place_walls(self, walls_data):
-        for x, row in enumerate(walls_data):
-            for y, config in enumerate(row):
-                if 0 <= x < self.height and 0 <= y < self.width:  # Validar coordenadas
-                    if config != "0000":
-                        wall = FireRescueAgent(f"wall_{x}_{y}", self, "wall", state={"integrity": 2, "damage_taken": 0})
-                        self.grid.place_agent(wall, (x, y))
-                        self.schedule.add(wall)
-                else:
-                    print(f"Error placing wall at ({x}, {y}). Out of grid bounds.")
+        # Initialize POIs
+        for key, state in self.poi.items():
+            pass  
 
-    def place_pois(self, pois_data):
-        for x, y, is_victim in pois_data:  # Cada elemento tiene tres valores
-            state = "v" if is_victim else "f"  # Determina el estado del POI
-            poi = FireRescueAgent(f"poi_{x}_{y}", self, "poi", state=state)
-            self.grid.place_agent(poi, (x - 1, y - 1))  # Ajusta las coordenadas a base 0 si es necesario
-            self.schedule.add(poi)
+        # Add firefighters to the simulation
+        spawn_cycle = itertools.cycle(self.spawn_points)
+        for firefighter_id in range(num_firefighters):
+            spawn_position = next(spawn_cycle)
+            agent = FireRescueAgent(firefighter_id, self, spawn_position)
+            self.grid.place_agent(agent, spawn_position)
+            self.schedule.add(agent)
 
-    def place_fire(self, fire_data):
-        for x, y in fire_data:
-            fire = FireRescueAgent(f"fire_{x}_{y}", self, "fire", state="fire")
-            self.grid.place_agent(fire, (x - 1, y - 1))
-            self.schedule.add(fire)
+    def add_poi(self):
+        current_count = len(self.poi)
+        if current_count < 3:
+            points_to_add = 3 - current_count
+            while points_to_add > 0:
+                random_point = (random.randint(0, self.width - 1), random.randint(0, self.height - 1))
+                if random_point not in self.poi:
+                    self.poi[random_point] = True
+                    self.grid_values[random_point] = 0
+                    points_to_add -= 1
 
-    def place_doors(self, doors_data):
-        for (x1, y1), (x2, y2) in doors_data:
-            door = FireRescueAgent(f"door_{x1}_{y1}", self, "door", state={"is_open": False})
-            self.grid.place_agent(door, (x1 - 1, y1 - 1))
-            self.grid.place_agent(door, (x2 - 1, y2 - 1))
-            self.schedule.add(door)
+    def spread_fire(self):
+        fire_candidates = [pos for pos, value in self.grid_values.items() if value in (0, 1, 2)]
+        if fire_candidates:
+            fire_source = random.choice(fire_candidates)
+            if self.grid_values[fire_source] == 0:
+                self.grid_values[fire_source] = 1
+            elif self.grid_values[fire_source] == 1:
+                self.grid_values[fire_source] = 2
+            elif self.grid_values[fire_source] == 2:
+                neighbors = self.grid.get_neighborhood(fire_source, moore=False, include_center=False)
+                for neighbor in neighbors:
+                    if self.check_collision(fire_source, neighbor):
+                        self.damage(fire_source, neighbor)
+                    if self.grid_values[neighbor] == 0:
+                        self.grid_values[neighbor] = 2
+                    elif self.grid_values[neighbor] == 1:
+                        self.grid_values[neighbor] = 2
 
-    def place_entry_points(self, entry_points):
-        """
-        Coloca puntos de entrada en el grid y los marca como puertas de salida.
-        """
-        for x, y in entry_points:
-            if 1 <= x <= self.height and 1 <= y <= self.width:  # Validar coordenadas
-                # Ajustar a base 0 para el grid
-                self.entry_points.append((x - 1, y - 1))
-                # Crear un marcador visual opcional para los puntos de entrada
-                marker = FireRescueAgent(f"entry_{x}_{y}", self, "entry_point")
-                self.grid.place_agent(marker, (x - 1, y - 1))
-                self.schedule.add(marker)
-            else:
-                print(f"Error: Entry point ({x}, {y}) is out of bounds.")
+    def check_collision(self, origin, destination):
+      """
+        Check if there is a wall or door blocking the path between two cells
+      """
+      x_diff = destination[0] - origin[0]
+      y_diff = destination[1] - origin[1]
 
+      direction = None
+      if x_diff == 0:
+          direction = 0 if y_diff < 0 else 2
+      elif y_diff == 0:
+          direction = 1 if x_diff < 0 else 3
 
-    def place_firefighters(self):
-        """
-        Coloca a seis bomberos en posiciones iniciales definidas (fijas).
-        """
-        initial_positions = [
-            (1, 1), (1, self.width),  # Esquinas superiores
-            (self.height // 2, 1), (self.height // 2, self.width),  # Centro izquierdo/derecho
-            (self.height, 1), (self.height, self.width)  # Esquinas inferiores
-        ]
-        for i, (x, y) in enumerate(initial_positions):
-            if 1 <= x <= self.height and 1 <= y <= self.width:
-                firefighter = FireRescueAgent(f"firefighter_{i}", self, "firefighter")
-                self.grid.place_agent(firefighter, (x - 1, y - 1))  # Ajustar a base 0
-                self.schedule.add(firefighter)
-            else:
-                print(f"Error placing firefighter at ({x}, {y}). Out of grid bounds.")
+      wall_block = direction is not None and self.wall_states[origin][0][direction] == "1"
+      door_block = origin in self.door_data and destination in self.door_data and not (
+          self.door_data[origin] and self.door_data[destination])
+
+      return wall_block or door_block
 
 
-    def add_fire(self, pos):
-        if self.grid.is_cell_empty(pos):
-            fire = FireRescueAgent(f"fire_{pos[0]}_{pos[1]}", self, "fire", state="fire")
-            self.grid.place_agent(fire, pos)
-            self.schedule.add(fire)
+    def damage(self, start, end):
+        if start in self.door_data and end in self.door_data:
+            if not self.door_data[start] and not self.door_data[end]:
+                del self.door_data[start]
+                del self.door_data[end]
+                self.damage_tracker += 1
+        else:
+            self.damage_tracker += 1
 
-    def get_grid(self):
-        """Devuelve una representación numérica del grid para visualización."""
-        grid = np.zeros((self.grid.width, self.grid.height))
-        for cell in self.grid.coord_iter():
-            content, (x, y) = cell  # Asegúrate de que las coordenadas se obtienen como una tupla
-            for agent in content:
-                if agent.agent_type == "wall":
-                    grid[x][y] = 1  # Representar paredes como 1
-                elif agent.agent_type == "fire":
-                    grid[x][y] = 2 if agent.state == "fire" else 3  # Fuego activo = 2, humo = 3
-                elif agent.agent_type == "poi":
-                    grid[x][y] = 4  # Puntos de interés/víctimas
-                elif agent.agent_type == "firefighter":
-                    grid[x][y] = 5  # Bomberos
-        return grid
-
+    def win_condition(self):
+        if self.survivor_losses >= 4 or self.damage_tracker >= 24:
+            self.simulation_status = "Defeat"
+            return True
+        elif self.survivors_saved >= 7:
+            self.simulation_status = "Victory"
+            self.victory_counter += 1
+            return True
+        return False
 
     def step(self):
-        self.schedule.step()
         self.datacollector.collect(self)
+        if not self.win_condition():
+            self.current_step += 1
+            self.schedule.step()
+            self.spread_fire()
+            self.add_poi()
 
-        # Verificar condiciones de victoria o derrota
-        if self.saved_victims >= self.victory_victims:
-            print("Victory!")
-            self.running = False
-        elif self.lost_victims >= self.failure_victims or self.total_damage_counter >= 24:
-            print("Game over!")
-            self.running = False
-
-
-# Configuración inicial
-WIDTH = 8
-HEIGHT = 6
-
-configInicial = [
-    [["1100", "1000", "1001", "1100", "1001", "1100", "1000", "1001"],
-     ["0100", "0000", "0011", "0100", "0011", "0110", "0010", "0011"],
-     ["0100", "0001", "1100", "1000", "1000", "1001", "1100", "1001"],
-     ["0100", "0011", "0110", "0010", "0010", "0011", "0110", "0011"],
-     ["1100", "1000", "1000", "1000", "1001", "1100", "1001", "1101"],
-     ["0110", "0010", "0010", "0010", "0011", "0110", "0011", "0111"]],
-    [(2, 4, True), (5, 1, False), (5, 8, True)],  # Cambia aquí
-    [(2, 2), (2, 3), (3, 2), (3, 3), (3, 4), (3, 5), (4, 4), (5, 6), (5, 7), (6, 6)],
-    [[(1, 3), (1, 4)], [(2, 5), (2, 6)], [(2, 8), (3, 8)], [(3, 2), (3, 3)], [(4, 4), (5, 4)], [(4, 6), (4, 7)], [(6, 5), (6, 6)], [(6, 7), (6, 8)]],
-    [(1, 6), (3, 1), (4, 8), (6, 3)]
+WALLS=  [
+    "1100" "1000" "1000" "1000" "1001" "1111" "1101" "1101",
+    "0110" "0010" "0000" "0000" "0001" "1111" "0100" "0001",
+    "1100" "1000" "0001" "1110" "1011" "1110" "0010" "0011",
+    "0100" "0001" "0100" "1010" "1010" "1011" "1110" "1011",
+    "0100" "0000" "0001" "1100" "1001" "1100" "1000" "1001",
+    "0110" "0010" "0011" "0110" "0011" "0110" "0010" "0011"
 ]
 
-'''
-configInicial2 = [
-    [["0000"] * 8 for _ in range(6)],  # Sin paredes
-    [(2, 4, True)],  # Una víctima
-    [(3, 3)],  # Un fuego
-    [],  # Sin puertas
-    [(1, 1)],  # Un bombero
-    [(1, 1)]  # Una salida
+POI = {(2,4):False,(6,7):True,(4,8):True,}
+
+NUM_FIREFIGHTERS= 6
+
+FIRE= [
+    "1 7",
+    "4 3",
+    "5 2",
+    "1 5",
+    "2 2",
+    "2 6",
+    "6 1",
+    "1 8",
+    "2 1",
+    "6 4"
+    ]
+
+DOORS= [
+    "1 6 1 7",
+    "2 6 2 7",
+    "3 6 4 6",
+    "4 6 4 7",
+    "4 5 5 5",
+    "4 6 5 6",
+    "5 3 5 4",
+    "3 5 4 5"
+    ]
+
+ENTRY_POINTS= [
+    "1 3",
+    "1 8",
+    "5 1",
+    "6 3"
 ]
-'''
 
+DOORS_DICTIONARY = {
+    (y -1, x-1): False
+    for door in DOORS
+    for x1, y1, x2, y2 in [map(int, door.split())]
+    for x in range(min(x1, x2), max(x1, x2) + 1)
+    for y in range(min(y1, y2), max(y1, y2) + 1)
+}
 
-# Crear el modelo
-model = FireRescueModel(WIDTH, HEIGHT, configInicial)
+steps = 30
 
+model = FireRescueModel(NUM_FIREFIGHTERS, POI, WALLS, DOORS_DICTIONARY, FIRE, ENTRY_POINTS)
 
-# Ejecutar la simulación
-steps = 0
-while model.running and steps < 30:
-    print(f"Step {steps + 1}")
+for i in range(steps):
     model.step()
-    print(f"Saved victims: {model.saved_victims}, Lost victims: {model.lost_victims}, Total damage: {model.total_damage_counter}")
-    steps += 1
+    print("Survivors saved: ", model.survivors_saved)
+    print("Survivors lost: ", model.survivor_losses)
+    print("Damage score: ", model.damage_tracker)
+    print("Simulation status: ", model.simulation_status)
+    print("")
 
-# Imprimir resultados
-all_grids = model.datacollector.get_model_vars_dataframe()
-print(all_grids.head(5))
+print('Victory counter: ', model.victory_counter)
 
-empty = 'white'
-wall = 'black'
-fire = 'red'
-smoke = 'gray'
-poi = 'green'
-firefighter = 'blue'
+# def get_json( datacollector):
+    
+#         model_data = datacollector.get_model_vars_dataframe().to_dict(orient="records")
+#         # print it
+#         print(model_data)
+        
+#         # Maneja inconsistencias en los datos de los agentes
+#          # unnecessary
+#         agent_data = datacollector.get_agent_vars_dataframe().to_dict(orient="records")
+#         # print it 
+#         print(agent_data)
+     
+        
+#         # Combina los datos
+#         output_data = {
+#             "model": model_data,
+#             "agents": agent_data
+#         }
+#         print(output_data)
+        
+#         # Guarda en un archivo JSON
+#         with open(json_file_path, "w") as json_file:
+#             json.dump(output_data, json_file, indent=4)
+#         print(f"Datos exportados a {json_file_path}")
+#     except Exception as e:
+#         print(f"Error al exportar datos: {e}")
 
-#cmap = ListedColormap(['white', 'grey', 'red', 'yellow', "blue"])
 
-cmap = ListedColormap([empty, wall, fire, smoke, poi, firefighter])
+# get_json( model.datacollector)
 
-fig, axis = plt.subplots(figsize = (4, 4))
-axis.set_xticks([])
-axis.set_yticks([])
-patch = plt.imshow(all_grids.iloc[0][0], cmap = cmap)
+# all_grids = model.datacollector.get_model_vars_dataframe()
+# print(all_grids.head(10))
 
-def animate(i):
-  patch.set_data(all_grids.iloc[i][0])
+# empty = 'white'
+# fire = 'red'
+# smoke = 'gray'
+# poi = 'green'
+# firefighter = 'blue'
 
-anim = animation.FuncAnimation(fig, animate, frames = len(all_grids))
+# cmap = ListedColormap([empty, smoke, fire, firefighter, poi])
 
 
+# fig, axis = plt.subplots(figsize=(6, 6))
+# axis.set_xticks([])
+# axis.set_yticks([])
+# patch = plt.imshow(all_grids.iloc[0,0], cmap=cmap)
+
+# def animate(i):
+#   patch.set_data(all_grids.iloc[i][0])
+
+# anim= animation.FuncAnimation(fig, animate, frames=steps)
+
+params = {
+    'num_firefighters': [6],  # Lista para iterar en batch_run
+    'poi': [  # Lista con diferentes configuraciones de puntos de interés
+        {
+            (2, 4): False,
+            (6, 7): True,
+            (4, 8): True,
+        }
+    ],
+    'wall_data': [  # Lista de configuraciones de paredes
+        [
+            "1100 1000 1000 1000 1001 1111 1101 1101",
+            "0110 0010 0000 0000 0001 1111 0100 0001",
+            "1100 1000 0001 1110 1011 1110 0010 0011",
+            "0100 0001 0100 1010 1010 1011 1110 1011",
+            "0100 0000 0001 1100 1001 1100 1000 1001",
+            "0110 0010 0011 0110 0011 0110 0010 0011"
+        ]
+    ],
+    'door_states': [  # Lista con diferentes configuraciones de puertas
+        {
+            (0, 5): False, (0, 6): False,
+            (1, 5): False, (1, 6): False,
+            (2, 5): False, (3, 5): False,
+            (3, 3): False, (3, 4): False,
+        }
+    ],
+    'initial_fire': [  # Lista de configuraciones iniciales de fuego
+        [
+            "1 7",
+            "4 3",
+            "5 2",
+            "1 5",
+            "2 2",
+            "2 6",
+            "6 1",
+            "1 8",
+            "2 1",
+            "6 4"
+        ]
+    ],
+    'spawn_points': [  # Lista de configuraciones de puntos de entrada
+        [
+            "1 3",
+            "1 8",
+            "5 1",
+            "6 3"
+        ]
+    ]
+}
+
+
+
+ITERATIONS = 10
+
+results = batch_run(
+    FireRescueModel,
+    parameters=params,
+    iterations=ITERATIONS,
+    max_steps=30,
+    number_processes=1,
+    data_collection_period=1,
+    display_progress=True
+)
+
+df = pd.DataFrame(results)
+df.info()
+
+df.head(5)
+
+sns.lineplot(data=df, x="RunId", y="DamageScore")
+plt.title("RunId vs. Damage Score")
+plt.ylabel("Damage Score")
+plt.xlabel("Run")
+plt.show()
+
+sns.lineplot(data=df, x="Step", y="DamageScore")
+plt.title("Step vs. Damage Score")
+plt.ylabel("Damage Score")
+plt.xlabel("Step")
+plt.show()
+
+sns.lineplot(data=df, x="RunId", y="Efficiency")
+plt.title("Run vs. Efficiency")
+plt.ylabel("Damage Score")
+plt.xlabel("Step")
+plt.show()
