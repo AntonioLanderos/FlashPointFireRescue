@@ -221,13 +221,12 @@ class FireRescueModel(Model):
             model_reporters={
                 "Grid": get_grid,
                 "Walls": get_walls,
-                "StepCount": "current_step",
                 "DoorStatus": "door_data",
                 "POIs": "interest_points",
                 "RescuedCount": "survivors_saved",
                 "SimulationStatus": "simulation_status",
-                "DamageScore": "damage_tracker",
-                "Efficiency": lambda model: model.survivors_saved / model.current_step if model.current_step > 0 else 0,
+               # "DamageScore": "damage_tracker",
+                # "Efficiency": lambda model: model.survivors_saved / model.current_step if model.current_step > 0 else 0,
             },
             agent_reporters={
                 "AgentID": lambda agent: agent.id,
@@ -397,7 +396,7 @@ DOORS_DICTIONARY = {
     for y in range(min(y1, y2), max(y1, y2) + 1)
 }
 
-steps = 30
+steps = 20
 
 model = FireRescueModel(NUM_FIREFIGHTERS, POI, WALLS, DOORS_DICTIONARY, FIRE, ENTRY_POINTS)
 
@@ -411,118 +410,24 @@ for i in range(steps):
 
 print('Victory counter: ', model.victory_counter)
 
-# def get_json( datacollector):
+# def get_json( datacollector, json_file_path="simulation_data.json"):
     
 #         model_data = datacollector.get_model_vars_dataframe().to_dict(orient="records")
 #         # print it
 #         print(model_data)
         
-#         # Maneja inconsistencias en los datos de los agentes
-#          # unnecessary
-#         agent_data = datacollector.get_agent_vars_dataframe().to_dict(orient="records")
-#         # print it 
-#         print(agent_data)
+ 
+#         # agent_data = datacollector.get_agent_vars_dataframe().to_dict(orient="records") 
+#         # print(agent_data)
      
-        
-#         # Combina los datos
-#         output_data = {
-#             "model": model_data,
-#             "agents": agent_data
-#         }
-#         print(output_data)
+    
         
 #         # Guarda en un archivo JSON
 #         with open(json_file_path, "w") as json_file:
-#             json.dump(output_data, json_file, indent=4)
+#             json.dump(model_data, json_file, indent=4)
 #         print(f"Datos exportados a {json_file_path}")
-#     except Exception as e:
-#         print(f"Error al exportar datos: {e}")
-
-
-# get_json( model.datacollector)
-
-# all_grids = model.datacollector.get_model_vars_dataframe()
-# print(all_grids.head(10))
-
-# empty = 'white'
-# fire = 'red'
-# smoke = 'gray'
-# poi = 'green'
-# firefighter = 'blue'
-
-# cmap = ListedColormap([empty, smoke, fire, firefighter, poi])
-
-# fig, axis = plt.subplots(figsize=(6, 6))
-# axis.set_xticks([])
-# axis.set_yticks([])
-# patch = plt.imshow(all_grids.iloc[0,0], cmap=cmap)
-
-# def animate(i):
-#   patch.set_data(all_grids.iloc[i][0])
-
-# anim= animation.FuncAnimation(fig, animate, frames=steps)
-
-# params = {
-#     'num_firefighters': [6],  # Lista para iterar en batch_run
-#     'poi': [  # Lista con diferentes configuraciones de puntos de interés
-#         {
-#             (2, 4): False,
-#             (6, 7): True,
-#             (4, 8): True,
-#         }
-#     ],
-#     'wall_data': [  # Lista de configuraciones de paredes
-#         [
-#             "1100 1000 1000 1000 1001 1111 1101 1101",
-#             "0110 0010 0000 0000 0001 1111 0100 0001",
-#             "1100 1000 0001 1110 1011 1110 0010 0011",
-#             "0100 0001 0100 1010 1010 1011 1110 1011",
-#             "0100 0000 0001 1100 1001 1100 1000 1001",
-#             "0110 0010 0011 0110 0011 0110 0010 0011"
-#         ]
-#     ],
-#     'door_states': [  # Lista con diferentes configuraciones de puertas
-#         {
-#             (0, 5): False, (0, 6): False,
-#             (1, 5): False, (1, 6): False,
-#             (2, 5): False, (3, 5): False,
-#             (3, 3): False, (3, 4): False,
-#         }
-#     ],
-#     'initial_fire': [  # Lista de configuraciones iniciales de fuego
-#         [
-#             "1 7",
-#             "4 3",
-#             "5 2",
-#             "1 5",
-#             "2 2",
-#             "2 6",
-#             "6 1",
-#             "1 8",
-#             "2 1",
-#             "6 4"
-#         ]
-#     ],
-#     'spawn_points': [  # Lista de configuraciones de puntos de entrada
-#         [
-#             "1 3",
-#             "1 8",
-#             "5 1",
-#             "6 3"
-#         ]
-#     ]
-# }
 
 
 
-# ITERATIONS = 10
+# get_json(model.datacollector, "simulation_data.json")
 
-# results = batch_run(
-#     FireRescueModel,
-#     parameters=params,
-#     iterations=ITERATIONS,
-#     max_steps=30,
-#     number_processes=1,
-#     data_collection_period=1,
-#     display_progress=True
-# )
