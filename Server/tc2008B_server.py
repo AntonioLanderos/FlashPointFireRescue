@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import logging
 import json
 
+
 class Server(BaseHTTPRequestHandler):
     
     def _set_response(self):
@@ -15,17 +16,27 @@ class Server(BaseHTTPRequestHandler):
         
     def do_GET(self):
         self._set_response()
-        self.wfile.write("GET request for {}".format(self.path).encode('utf-8'))
+        self.wfile.write("Get".format(0).encode('utf-8'))
 
     def do_POST(self):
-        position = {
-            "x" : 1,
-            "y" : 2,
-            "z" : 3
-        }
 
-        self._set_response()
-        self.wfile.write(str(position).encode('utf-8'))
+        infoModel = './simulation_data.json'
+
+        # Intentamos abrir y leer el archivo JSON
+        try:
+            with open(infoModel, 'r') as file:
+                simulation_data = json.load(file)  # Leer el contenido del archivo JSON
+
+            # Establecer la respuesta como JSON
+            self._set_response(content_type='application/json')
+
+            # Convertimos el contenido del archivo a JSON y lo enviamos como respuesta
+            self.wfile.write(json.dumps(simulation_data).encode('utf-8'))
+        
+        except Exception as e:
+            # Si hay un error (por ejemplo, el archivo no existe), enviamos un error 500
+            self.send_error(500, f"Error al leer el archivo JSON: {str(e)}")
+
 
 
 def run(server_class=HTTPServer, handler_class=Server, port=8585):
@@ -47,6 +58,5 @@ if __name__ == '__main__':
         run(port=int(argv[1]))
     else:
         run()
-
 
 
