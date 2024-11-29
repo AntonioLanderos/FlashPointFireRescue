@@ -154,7 +154,7 @@ class FireRescueAgent(Agent):
         The agent will take actions until it runs out of action points or it decides to end its turn.
         '''
         if self.pos == self.starting_position and self.carrying_survivor:
-            model.survivors_saved += 1
+            self.model.survivors_saved += 1
             self.carrying_survivor = False
 
         actions = [self.move_agent, self.extinguish_fire]
@@ -226,7 +226,6 @@ class FireRescueModel(Model):
                 "POIs": "interest_points",
                 "RescuedCount": "survivors_saved",
                 "SimulationStatus": "simulation_status",
-                "LossCount": "survivor_losses",
                 "DamageScore": "damage_tracker",
                 "Efficiency": lambda model: model.survivors_saved / model.current_step if model.current_step > 0 else 0,
             },
@@ -453,7 +452,6 @@ print('Victory counter: ', model.victory_counter)
 
 # cmap = ListedColormap([empty, smoke, fire, firefighter, poi])
 
-
 # fig, axis = plt.subplots(figsize=(6, 6))
 # axis.set_xticks([])
 # axis.set_yticks([])
@@ -464,90 +462,67 @@ print('Victory counter: ', model.victory_counter)
 
 # anim= animation.FuncAnimation(fig, animate, frames=steps)
 
-params = {
-    'num_firefighters': [6],  # Lista para iterar en batch_run
-    'poi': [  # Lista con diferentes configuraciones de puntos de interés
-        {
-            (2, 4): False,
-            (6, 7): True,
-            (4, 8): True,
-        }
-    ],
-    'wall_data': [  # Lista de configuraciones de paredes
-        [
-            "1100 1000 1000 1000 1001 1111 1101 1101",
-            "0110 0010 0000 0000 0001 1111 0100 0001",
-            "1100 1000 0001 1110 1011 1110 0010 0011",
-            "0100 0001 0100 1010 1010 1011 1110 1011",
-            "0100 0000 0001 1100 1001 1100 1000 1001",
-            "0110 0010 0011 0110 0011 0110 0010 0011"
-        ]
-    ],
-    'door_states': [  # Lista con diferentes configuraciones de puertas
-        {
-            (0, 5): False, (0, 6): False,
-            (1, 5): False, (1, 6): False,
-            (2, 5): False, (3, 5): False,
-            (3, 3): False, (3, 4): False,
-        }
-    ],
-    'initial_fire': [  # Lista de configuraciones iniciales de fuego
-        [
-            "1 7",
-            "4 3",
-            "5 2",
-            "1 5",
-            "2 2",
-            "2 6",
-            "6 1",
-            "1 8",
-            "2 1",
-            "6 4"
-        ]
-    ],
-    'spawn_points': [  # Lista de configuraciones de puntos de entrada
-        [
-            "1 3",
-            "1 8",
-            "5 1",
-            "6 3"
-        ]
-    ]
-}
+# params = {
+#     'num_firefighters': [6],  # Lista para iterar en batch_run
+#     'poi': [  # Lista con diferentes configuraciones de puntos de interés
+#         {
+#             (2, 4): False,
+#             (6, 7): True,
+#             (4, 8): True,
+#         }
+#     ],
+#     'wall_data': [  # Lista de configuraciones de paredes
+#         [
+#             "1100 1000 1000 1000 1001 1111 1101 1101",
+#             "0110 0010 0000 0000 0001 1111 0100 0001",
+#             "1100 1000 0001 1110 1011 1110 0010 0011",
+#             "0100 0001 0100 1010 1010 1011 1110 1011",
+#             "0100 0000 0001 1100 1001 1100 1000 1001",
+#             "0110 0010 0011 0110 0011 0110 0010 0011"
+#         ]
+#     ],
+#     'door_states': [  # Lista con diferentes configuraciones de puertas
+#         {
+#             (0, 5): False, (0, 6): False,
+#             (1, 5): False, (1, 6): False,
+#             (2, 5): False, (3, 5): False,
+#             (3, 3): False, (3, 4): False,
+#         }
+#     ],
+#     'initial_fire': [  # Lista de configuraciones iniciales de fuego
+#         [
+#             "1 7",
+#             "4 3",
+#             "5 2",
+#             "1 5",
+#             "2 2",
+#             "2 6",
+#             "6 1",
+#             "1 8",
+#             "2 1",
+#             "6 4"
+#         ]
+#     ],
+#     'spawn_points': [  # Lista de configuraciones de puntos de entrada
+#         [
+#             "1 3",
+#             "1 8",
+#             "5 1",
+#             "6 3"
+#         ]
+#     ]
+# }
 
 
 
-ITERATIONS = 10
+# ITERATIONS = 10
 
-results = batch_run(
-    FireRescueModel,
-    parameters=params,
-    iterations=ITERATIONS,
-    max_steps=30,
-    number_processes=1,
-    data_collection_period=1,
-    display_progress=True
-)
-
-df = pd.DataFrame(results)
-df.info()
-
-df.head(5)
-
-sns.lineplot(data=df, x="RunId", y="DamageScore")
-plt.title("RunId vs. Damage Score")
-plt.ylabel("Damage Score")
-plt.xlabel("Run")
-plt.show()
-
-sns.lineplot(data=df, x="Step", y="DamageScore")
-plt.title("Step vs. Damage Score")
-plt.ylabel("Damage Score")
-plt.xlabel("Step")
-plt.show()
-
-sns.lineplot(data=df, x="RunId", y="Efficiency")
-plt.title("Run vs. Efficiency")
-plt.ylabel("Damage Score")
-plt.xlabel("Step")
-plt.show()
+# results = batch_run(
+#     FireRescueModel,
+#     parameters=params,
+#     iterations=ITERATIONS,
+#     max_steps=30,
+#     number_processes=1,
+#     data_collection_period=1,
+#     display_progress=True
+# )
